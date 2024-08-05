@@ -22,7 +22,7 @@ from timm.models.layers import drop_path, to_2tuple, trunc_normal_
 from mmcv_custom import load_checkpoint
 from mmseg.utils import get_root_logger
 from mmseg.models.builder import BACKBONES
-from einops import rearrange, repeat
+
 
 class DropPath(nn.Module):
     """Drop paths (Stochastic Depth) per sample  (when applied in main path of residual blocks).
@@ -38,66 +38,26 @@ class DropPath(nn.Module):
         return 'p={}'.format(self.drop_prob)
 
 
-# class Mlp(nn.Module):
-#     def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=nn.GELU, drop=0.):
-#         super().__init__()
-#         out_features = out_features or in_features
-#         hidden_features = hidden_features or in_features
-#         self.fc1 = nn.Linear(in_features, hidden_features)
-#         self.act = act_layer()
-#         self.fc2 = nn.Linear(hidden_features, out_features)
-#         self.drop = nn.Dropout(drop)
-
-#     def forward(self, x):
-#         x = self.fc1(x)
-#         x = self.act(x)
-#         # x = self.drop(x)
-#         # commit this for the orignal BERT implement 
-#         x = self.fc2(x)
-#         x = self.drop(x)
-#         return x
-
-
 class Mlp(nn.Module):
-    """Transformer MLP / feed-forward block."""
-    # def __init__(self, d, overcomplete_ratio=4, eta=0.1, lmbda=0.1):
-    def __init__(self, in_features, hidden_features=None, is_alpha=True, out_features=None, act_layer=nn.GELU, drop=0.):
-        super(Mlp, self).__init__()
-        self.eta = 0.1
-        self.lmbda = 0.1
-        self.d = in_features
-        self.is_alpha = is_alpha
-        if not self.is_alpha:
-            self.D = nn.Parameter(torch.randn(self.d, self.d) * 0.02)
-        else:
-            # Define the matrix D
-            self.D = nn.Parameter(torch.nn.init.kaiming_uniform_(torch.empty(self.d, hidden_features)))
-            self.D1 = nn.Parameter(torch.nn.init.kaiming_uniform_(torch.empty(self.d, hidden_features)))
+    def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=nn.GELU, drop=0.):
+        super().__init__()
+        out_features = out_features or in_features
+        hidden_features = hidden_features or in_features
+        self.fc1 = nn.Linear(in_features, hidden_features)
+        self.act = act_layer()
+        self.fc2 = nn.Linear(hidden_features, out_features)
+        self.drop = nn.Dropout(drop)
 
     def forward(self, x):
-        if not self.is_alpha:
-            n, l, d = x.shape
-
-            Dx = torch.einsum('dp,nlp->nld', self.D, x)
-            lasso_grad = torch.einsum('pd,nlp->nld', self.D, Dx - x)
-            x = F.relu(x - self.eta * lasso_grad - self.eta * self.lmbda)
-
-        else:
-            # First step of PGD: initialize at z0 = 0, compute lasso prox, get z1
-            negative_lasso_grad = torch.einsum("pd,nlp->nld", self.D, x)
-            z1 = F.relu(self.eta * negative_lasso_grad - self.eta * self.lmbda)
-
-            # Second step of PGD: initialize at z1, compute lasso prox, get z2
-            Dz1 = torch.einsum("dp,nlp->nld", self.D, z1)
-            lasso_grad = torch.einsum("pd,nlp->nld", self.D, Dz1 - x)
-            z2 = F.relu(z1 - self.eta * lasso_grad - self.eta * self.lmbda)
-
-            x = torch.einsum("dp,nlp->nld", self.D1, z2)
-       
-      
+        x = self.fc1(x)
+        x = self.act(x)
+        # x = self.drop(x)
+        # commit this for the orignal BERT implement 
+        x = self.fc2(x)
+        x = self.drop(x)
         return x
-    
-'''
+
+
 class Attention(nn.Module):
     def __init__(
             self, dim, num_heads=8, qkv_bias=False, qk_scale=None, attn_drop=0.,
@@ -175,91 +135,13 @@ class Attention(nn.Module):
         x = self.proj(x)
         x = self.proj_drop(x)
         return x
-'''
-
-class Attention(nn.Module):
-    # def __init__(self, dim, heads = 8, dim_head = 64, dropout = 0.):
-    def __init__(self, dim, num_heads=8, qkv_bias=False, qk_scale=None, attn_drop=0.,
-            proj_drop=0., window_size=None, attn_head_dim=None):
-        super().__init__()
-        dim_head =  dim // num_heads
-        inner_dim = dim_head *  num_heads
-        project_out = not (num_heads == 1 and dim_head == dim)
-
-        self.heads = num_heads
-        self.scale = dim_head ** -0.5
-
-        self.attend = nn.Softmax(dim = -1)
-        self.dropout = nn.Dropout(attn_drop)
-
-        self.qkv = nn.Linear(dim, inner_dim, bias=False)
-        if window_size: # (32,32)
-            self.window_size = window_size
-            self.num_relative_distance = (2 * window_size[0] - 1) * (2 * window_size[1] - 1) + 3
-            self.relative_position_bias_table = nn.Parameter(
-                torch.zeros(self.num_relative_distance, num_heads))  # 2*Wh-1 * 2*Ww-1, nH
-            # cls to token & token 2 cls & cls to cls
-
-            # get pair-wise relative position index for each token inside the window
-            coords_h = torch.arange(window_size[0])
-            coords_w = torch.arange(window_size[1])
-            coords = torch.stack(torch.meshgrid([coords_h, coords_w]))  # 2, Wh, Ww
-            coords_flatten = torch.flatten(coords, 1)  # 2, Wh*Ww
-            relative_coords = coords_flatten[:, :, None] - coords_flatten[:, None, :]  # 2, Wh*Ww, Wh*Ww
-            relative_coords = relative_coords.permute(1, 2, 0).contiguous()  # Wh*Ww, Wh*Ww, 2
-            relative_coords[:, :, 0] += window_size[0] - 1  # shift to start from 0
-            relative_coords[:, :, 1] += window_size[1] - 1
-            relative_coords[:, :, 0] *= 2 * window_size[1] - 1
-            relative_position_index = \
-                torch.zeros(size=(window_size[0] * window_size[1] + 1, ) * 2, dtype=relative_coords.dtype)
-            relative_position_index[1:, 1:] = relative_coords.sum(-1)  # Wh*Ww, Wh*Ww
-            relative_position_index[0, 0:] = self.num_relative_distance - 3
-            relative_position_index[0:, 0] = self.num_relative_distance - 2
-            relative_position_index[0, 0] = self.num_relative_distance - 1
-
-            self.register_buffer("relative_position_index", relative_position_index) # relative_position_index: torch.Size([1025, 1025])
-
-            # trunc_normal_(self.relative_position_bias_table, std=.0)
-        else:
-            self.window_size = None
-            self.relative_position_bias_table = None
-            self.relative_position_index = None
-        
-        self.to_out = nn.Sequential(
-            nn.Linear(inner_dim, dim, bias=False),
-            # nn.Dropout(dropout)
-        ) if project_out else nn.Identity()
-
-    def forward(self, x, rel_pos_bias=None):
-       
-        w = rearrange(self.qkv(x), 'b n (h d) -> b h n d', h = self.heads)
-
-        dots = torch.matmul(w, w.transpose(-1, -2)) * self.scale
-
-        if self.relative_position_bias_table is not None:
-            relative_position_bias = \
-                self.relative_position_bias_table[self.relative_position_index.view(-1)].view(
-                    self.window_size[0] * self.window_size[1] + 1,
-                    self.window_size[0] * self.window_size[1] + 1, -1)  # Wh*Ww,Wh*Ww,nH
-            relative_position_bias = relative_position_bias.permute(2, 0, 1).contiguous()  # nH, Wh*Ww, Wh*Ww
-            dots = dots + relative_position_bias.unsqueeze(0)
-
-        if rel_pos_bias is not None:
-            dots = dots + rel_pos_bias
-
-        attn = self.attend(dots)
-       
-        out = torch.matmul(attn, w)
-
-        out = rearrange(out, 'b h n d -> b n (h d)')
-        return self.to_out(out)
 
 
 class Block(nn.Module):
 
     def __init__(self, dim, num_heads, mlp_ratio=4., qkv_bias=False, qk_scale=None, drop=0., attn_drop=0.,
                  drop_path=0., init_values=None, act_layer=nn.GELU, norm_layer=nn.LayerNorm,
-                 window_size=None, is_alpha=False, attn_head_dim=None):
+                 window_size=None, attn_head_dim=None):
         super().__init__()
         self.norm1 = norm_layer(dim)
         self.attn = Attention(
@@ -269,8 +151,7 @@ class Block(nn.Module):
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity() # drop_path = 0.0
         self.norm2 = norm_layer(dim)
         mlp_hidden_dim = int(dim * mlp_ratio)
-        self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, is_alpha=is_alpha, act_layer=act_layer, drop=drop)
-        self.is_alpha =is_alpha
+        self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop)
 
         if init_values is not None: # init_values = 1.0
             self.gamma_1 = nn.Parameter(init_values * torch.ones((dim)),requires_grad=True)
@@ -284,8 +165,7 @@ class Block(nn.Module):
             x = x + self.drop_path(self.mlp(self.norm2(x)))
         else:
             x = x + self.drop_path(self.gamma_1 * self.attn(self.norm1(x), rel_pos_bias=rel_pos_bias))
-            mlp_o = self.drop_path(self.gamma_2 * self.mlp(self.norm2(x)))
-            x = x + mlp_o if self.is_alpha else mlp_o
+            x = x + self.drop_path(self.gamma_2 * self.mlp(self.norm2(x)))
         return x
 
 
@@ -398,13 +278,12 @@ class MAE(nn.Module):
                  num_heads=12, mlp_ratio=4., qkv_bias=False, qk_scale=None, drop_rate=0., attn_drop_rate=0.,
                  drop_path_rate=0., hybrid_backbone=None, norm_layer=None, init_values=None, use_checkpoint=False, 
                  use_abs_pos_emb=True, use_rel_pos_bias=False, use_shared_rel_pos_bias=False,
-                 out_indices=[3, 5, 7, 11], is_alpha = True, fpn1_norm='SyncBN'):
+                 out_indices=[3, 5, 7, 11], fpn1_norm='SyncBN'):
         super().__init__()
-        print('using crate alpha')
+        print('using origin mae')
         norm_layer = norm_layer or partial(nn.LayerNorm, eps=1e-6)
         self.num_classes = num_classes # 80
         self.num_features = self.embed_dim = embed_dim  # num_features for consistency with other models
-        self.is_alpha = is_alpha
 
         if hybrid_backbone is not None: # hybrid_backbone = None
             self.patch_embed = HybridEmbed(
@@ -435,7 +314,7 @@ class MAE(nn.Module):
             Block(
                 dim=embed_dim, num_heads=num_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias, qk_scale=qk_scale,
                 drop=drop_rate, attn_drop=attn_drop_rate, drop_path=dpr[i], norm_layer=norm_layer,
-                init_values=init_values, is_alpha=self.is_alpha, window_size=self.patch_embed.patch_shape if use_rel_pos_bias else None) 
+                init_values=init_values, window_size=self.patch_embed.patch_shape if use_rel_pos_bias else None)
             for i in range(depth)]) # depth = 12
 
         if self.pos_embed is not None:
@@ -473,19 +352,7 @@ class MAE(nn.Module):
             self.fpn4 = nn.Sequential(
                 nn.MaxPool2d(kernel_size=4, stride=4),
             )
-        elif patch_size == 32:
-            self.fpn1 = nn.Sequential(
-                nn.ConvTranspose2d(embed_dim, embed_dim, kernel_size=2, stride=2),
-            )
-
-            self.fpn2 = nn.Identity()
-            self.fpn3 = nn.Sequential(
-                nn.MaxPool2d(kernel_size=2, stride=2),
-            )
-            self.fpn4 = nn.Sequential(
-                nn.MaxPool2d(kernel_size=2, stride=2),
-            )
-        
+       
 
         self.apply(self._init_weights)
         self.fix_init_weight()
@@ -495,9 +362,8 @@ class MAE(nn.Module):
             param.div_(math.sqrt(2.0 * layer_id))
 
         for layer_id, layer in enumerate(self.blocks):
-            pass
-            # rescale(layer.attn.proj.weight.data, layer_id + 1)
-            # rescale(layer.mlp.fc2.weight.data, layer_id + 1)
+            rescale(layer.attn.proj.weight.data, layer_id + 1)
+            rescale(layer.mlp.fc2.weight.data, layer_id + 1)
 
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
@@ -528,7 +394,7 @@ class MAE(nn.Module):
         if isinstance(pretrained, str): # pretrained = '/HDD_data_storage_2u_1/jinruiyang/shared_space/code/TinyMIM/TinyMIM-PT-B.pth'
             self.apply(_init_weights)
             logger = get_root_logger()
-            load_checkpoint(self, pretrained, strict=False, logger=logger,is_alpha=self.is_alpha)
+            load_checkpoint(self, pretrained, strict=False, logger=logger)
         elif pretrained is None:
             self.apply(_init_weights)
         else:

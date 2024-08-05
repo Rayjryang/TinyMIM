@@ -17,7 +17,7 @@ from mmseg.datasets import build_dataset
 from mmseg.models import build_segmentor
 from mmseg.utils import collect_env, get_root_logger
 
-from backbone import mae
+from Segmentation.TinyMIM.backbone import mae
 
 
 def parse_args():
@@ -66,7 +66,7 @@ def parse_args():
 
 def main():
     args = parse_args()
-
+    print(f'torch.cuda.is_available() {torch.cuda.is_available() }')
     cfg = Config.fromfile(args.config)
     if args.options is not None:
         cfg.merge_from_dict(args.options)
@@ -90,7 +90,7 @@ def main():
         cfg.gpu_ids = args.gpu_ids
     else:
         cfg.gpu_ids = range(1) if args.gpus is None else range(args.gpus)
-
+    print(f" **cfg.dist_params { cfg.dist_params}")
     # init distributed env first, since logger depends on the dist info.
     if args.launcher == 'none':
         distributed = False
@@ -136,6 +136,9 @@ def main():
         train_cfg=cfg.get('train_cfg'),
         test_cfg=cfg.get('test_cfg'))
 
+    for k,v in model.state_dict().items():
+        print(k,v.shape)
+    
     logger.info(model)
 
     datasets = [build_dataset(cfg.data.train)]

@@ -62,10 +62,13 @@ def load_state_dict(module, state_dict, strict=False, logger=None):
     all_missing_keys = []
     err_msg = []
 
-    metadata = getattr(state_dict, '_metadata', None)
+    metadata = getattr(state_dict, '_metadata', None) # metadata = None
     state_dict = state_dict.copy()
     if metadata is not None:
         state_dict._metadata = metadata
+    
+    # for k,v in module.state_dict().items():
+    #     print(k,v.shape)
 
     # use _load_from_state_dict to enable checkpoint version control
     def load(module, prefix=''):
@@ -307,11 +310,46 @@ def cosine_scheduler(base_value, final_value, epochs, niter_per_ep, warmup_epoch
     return schedule
 
 
+def alpha_convert_ckpt(state_dict,is_alpha):
+    rename_state = {}
+    model_prefix = 'blocks'
+    ckpt_prefix = 'transformer.layers'
+    for k,v in state_dict.items():
+        if 'conv1' in k:
+            if "conv1.weight" in k:
+                rename_state['patch_embed.proj.weight'] = v
+            elif "conv1.bias" in k:
+                rename_state['patch_embed.proj.bias'] = v
+            else:
+                assert False
+        elif 'pos_embedding' in k:
+            rename_state['pos_embed'] = v
+        elif 'transformer.layers' in k:
+            index = k.split('.')[2]
+            rename_state[f'{model_prefix}.{index}.norm1.weight'] = state_dict[f'{ckpt_prefix}.{index}.0.norm.weight']
+            rename_state[f'{model_prefix}.{index}.norm1.bias'] = state_dict[f'{ckpt_prefix}.{index}.0.norm.bias']
+
+            rename_state[f'{model_prefix}.{index}.attn.qkv.weight'] = state_dict[f'{ckpt_prefix}.{index}.0.fn.qkv.weight']
+            rename_state[f'{model_prefix}.{index}.attn.to_out.0.weight'] = state_dict[f'{ckpt_prefix}.{index}.0.fn.to_out.0.weight']    
+            
+            rename_state[f'{model_prefix}.{index}.norm2.weight'] = state_dict[f'{ckpt_prefix}.{index}.1.norm.weight']
+            rename_state[f'{model_prefix}.{index}.norm2.bias'] = state_dict[f'{ckpt_prefix}.{index}.1.norm.bias']
+
+            
+            rename_state[f'{model_prefix}.{index}.mlp.D'] = state_dict[f'{ckpt_prefix}.{index}.1.fn.D']
+            if is_alpha:
+                rename_state[f'{model_prefix}.{index}.mlp.D1'] = state_dict[f'{ckpt_prefix}.{index}.1.fn.D1']
+        else:
+            rename_state[k] = v
+
+    return rename_state
+
 def load_checkpoint(model,
                     filename,
                     map_location='cpu',
                     strict=False,
-                    logger=None):
+                    logger=None,
+                    is_alpha=True):
     """Load checkpoint from a file or URI.
 
     Args:
@@ -341,6 +379,8 @@ def load_checkpoint(model,
         state_dict = checkpoint['module']
     else:
         state_dict = checkpoint
+    
+    state_dict = alpha_convert_ckpt(state_dict,is_alpha)
     # strip prefix of state_dict
     if list(state_dict.keys())[0].startswith('module.'):
         state_dict = {k[7:]: v for k, v in state_dict.items()}

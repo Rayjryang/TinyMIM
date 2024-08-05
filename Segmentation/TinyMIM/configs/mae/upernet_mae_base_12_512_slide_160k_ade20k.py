@@ -24,7 +24,7 @@ model = dict(
     backbone=dict(
         type='MAE',
         img_size=512,
-        patch_size=16,
+        patch_size=32,
         embed_dim=768,
         depth=12,
         num_heads=12,
@@ -34,7 +34,8 @@ model = dict(
         use_rel_pos_bias=True,
         init_values=1.,
         drop_path_rate=0.1,
-        out_indices=[3, 5, 7, 11]
+        out_indices=[3, 5, 7, 11],
+        is_alpha=False,
     ),
     decode_head=dict(
         in_channels=[768, 768, 768, 768],
@@ -71,5 +72,5 @@ optimizer_config = dict(
     grad_clip=None,
     coalesce=True,
     bucket_size_mb=-1,
-    use_fp16=True,
+    use_fp16=False,
 )
